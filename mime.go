@@ -3,8 +3,9 @@ package wail
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
-	"mime" 
+	"mime"
 	"mime/quotedprintable"
 	"strings"
 	"time"
@@ -13,15 +14,12 @@ import (
 // RFC 5322 2.2.3
 const lineLenghtLimit = 76
 
-var months = [...]string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
-var days = [...]string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
-
 type mimeBuilder struct {
 	charset     Charset
 	encoding    Encoding
 	encoder     mime.WordEncoder
 	contentType contentType
-	header      map[string]string
+	header      map[string]string // textproto.MIMEHeader?
 }
 
 func newMimeBuilder(charset Charset, encoding Encoding) *mimeBuilder {
@@ -105,7 +103,7 @@ func (m *mimeBuilder) SetFieldCc(addr ...string) {
 
 func (m *mimeBuilder) SetFieldBcc(addr ...string) {
 	if len(addr) == 0 {
-		return
+		return 
 	}
 
 	m.header["bcc"] = makeAddrString(addr)
@@ -113,61 +111,53 @@ func (m *mimeBuilder) SetFieldBcc(addr ...string) {
 
 func (m *mimeBuilder) SetMessage(msg Message) {
 	m.contentType = msg.GetContentType()
-	m.header[string(m.contentType)] = msg.GetContent(m)
+	m.header[m.contentType.string()] = msg.GetContent(m)
 }
 
-func (m *mimeBuilder) GetResultMessage(maxMsgSize uint) []byte {
-	h := make([]byte, 0, maxMsgSize)
+func (m *mimeBuilder) GetResultMessage(maxMsgSize uint) ([]byte, error) {
+	to, ok := m.header["to"]
+	if !ok {
+		return nil, errors.New("wail: field 'To' doesn't specified")
+	}
+	
+	const size = 1048576; // 1 MB
+	
+	h := make([]byte, 0, size)
 
-	date := getCurrentDateTime()
+	date := time.Now().Format(time.RFC1123Z)
 
-	h = append(h, []byte("Date: "+date+"\n")...)
-	h = append(h, []byte("Subject: "+m.header["subject"]+"\n")...)
-	h = append(h, []byte("From: "+m.header["from"]+"\n")...)
-	h = append(h, []byte("To: "+m.header["to"]+"\n")...)
+	h = append(h, []byte("Date: "+date+"\r\n")...)
+	h = append(h, []byte("Subject: "+m.header["subject"]+"\r\n")...)
+	h = append(h, []byte("From: "+m.header["from"]+"\r\n")...)
+	h = append(h, []byte("To: "+to+"\r\n")...)
 
 	if cc, ok := m.header["cc"]; ok {
-		h = append(h, []byte("Cc: "+cc+"\n")...)
+		h = append(h, []byte("Cc: "+cc+"\r\n")...)
 	}
 
 	if bcc, ok := m.header["bcc"]; ok {
-		h = append(h, []byte("Bcc: "+bcc+"\n")...)
+		h = append(h, []byte("Bcc: "+bcc+"\r\n")...)
 	}
 
 	h = append(h, []byte("MIME-Version: 1.0\r\n")...)
 
-	if ct, ok := m.header[string(m.contentType)]; ok {
+	if ct, ok := m.header[m.contentType.string()]; ok {
 		h = append(h, []byte(ct+"\r\n")...)
 	}
 
-	return h[0:len(h)] // cut unused bytes
-}
-
-func getCurrentDateTime() string {
-	now := time.Now()
-	_, offset := now.Zone()
-
-	var sign string
-	if offset >= 0 {
-		sign = "+"
-	} else {
-		sign = "-"
+	if maxMsgSize != 0 && uint(len(h)) > maxMsgSize { 
+		h = nil
+		return nil, fmt.Errorf("wail: the max message size (%d) that the server can accept has been exceeded", maxMsgSize); 
 	}
 
-	zone := fmt.Sprintf("%s%.2d00", sign, offset/3600)
-
-	date := fmt.Sprintf("%s, %d %s %d %.2d:%.2d:%.2d %s",
-		days[int(now.Weekday())], now.Day(), months[int(now.Month())-1], now.Year(),
-		now.Hour(), now.Minute(), now.Second(), zone)
-
-	return date
+	return h, nil
 }
 
 func split(value *string) {
 	if value == nil {
 		return
 	}
-	
+
 	s := strings.Fields(*value)
 
 	if len(s) == 0 {
@@ -180,25 +170,25 @@ func split(value *string) {
 		for i := 0; i < len(*value); i += lineLenghtLimit {
 			if i+lineLenghtLimit > len(*value) {
 				out += (*value)[i:len(*value)] + "\r\n"
-			 } else {
+			} else {
 				out += (*value)[i:i+lineLenghtLimit] + "\r\n"
 			}
-		}	
+		}
 	} else if len(s) > 1 {
 		for i := 0; i < len(s)-1; i++ {
-			
+
 			if len(s[i]) > lineLenghtLimit {
 				split(&s[i])
 			} else if len(s[i+1]) > lineLenghtLimit {
-				split(&s[i+1])	
+				split(&s[i+1])
 			}
-			
-			out += s[i] 
-	
-			if len(s[i])+len(s[i+1]) + 1 > lineLenghtLimit {
+
+			out += s[i]
+
+			if len(s[i])+len(s[i+1])+1 > lineLenghtLimit {
 				out += "\r\n"
 			}
-	
+
 			out += " "
 			out += s[i+1]
 		}
