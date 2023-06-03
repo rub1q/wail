@@ -20,29 +20,11 @@ const (
 	US_ASCII   Charset = "US-ASCII"
 )
 
-type AuthMethod string
-
-const (
-	Plain   AuthMethod = "PLAIN"
-	Login   AuthMethod = "LOGIN"
-	XoAuth2 AuthMethod = "XOAUTH2"
-	CramMd5 AuthMethod = "CRAM-MD5"
-)
-
-type recipientType int
-
-// const (
-// 	to  recipientType = 1 << 1
-// 	cc  recipientType = 1 << 2
-// 	bcc recipientType = 1 << 3
-// )
-
-type Recipients []string //map[recipientType][]string
+type Recipients []string 
 
 type MailConfig struct {
 	Charset  Charset
 	Encoding Encoding
-	Auth     AuthMethod
 }
 
 type Mail struct {
@@ -55,7 +37,6 @@ type Mail struct {
 var DefaultMailConfig MailConfig = MailConfig{
 	Charset:  UTF8,
 	Encoding: Base64,
-	Auth:     Login,
 }
 
 func NewMail(cfg *MailConfig) *Mail {
@@ -66,7 +47,6 @@ func NewMail(cfg *MailConfig) *Mail {
 			cfg: &MailConfig{
 				Charset:  cfg.Charset,
 				Encoding: cfg.Encoding,
-				Auth:     cfg.Auth,
 			},
 		}
 	} else {
@@ -76,10 +56,9 @@ func NewMail(cfg *MailConfig) *Mail {
 	// TODO: parse config properly
 
 	// log.Println("cfg", cfg)
-	// log.Println("Auth", m.cfg.Auth)
 
 	m.mb = newMimeBuilder(m.cfg.Charset, m.cfg.Encoding)
-	m.recipients = make(Recipients, 0)
+	m.recipients = make(Recipients, 0, 10)
 
 	return m
 }
@@ -89,7 +68,7 @@ func (m *Mail) SetSubject(subj string) {
 	m.mb.SetFieldSubject(subj)
 }
 
-func (m *Mail) validateAndAppendEmails(emails []string) error { // rType recipientType, 
+func (m *Mail) validateAndAppendEmails(emails []string) error {
 	if len(emails) == 0 {
 		return errors.New("wail: an empty email address list has been provided")
 	}
@@ -102,23 +81,13 @@ func (m *Mail) validateAndAppendEmails(emails []string) error { // rType recipie
 		}
 	}
 
-	// m.recipients[rType] = emails
 	m.recipients = append(m.recipients, emails...)
 	return nil
 }
 
-// func (m *Mail) From(name, address string) error {
-// 	if _, err := mail.ParseAddress(address); err != nil {
-// 		return err
-// 	}
-
-// 	m.mb.SetFieldFrom(name, address)
-// 	return nil
-// }
-
 // To sets main email addresses to which an email will be sent
 func (m *Mail) To(emails ...string) error {
-	if err := m.validateAndAppendEmails(emails); err != nil { //to, 
+	if err := m.validateAndAppendEmails(emails); err != nil {
 		return err
 	}
 
@@ -128,7 +97,7 @@ func (m *Mail) To(emails ...string) error {
 
 // CopyTo sets email addresses to which an email copy will be sent
 func (m *Mail) CopyTo(emails ...string) error {
-	if err := m.validateAndAppendEmails(emails); err != nil { // cc, 
+	if err := m.validateAndAppendEmails(emails); err != nil { 
 		return err
 	}
 
@@ -138,7 +107,7 @@ func (m *Mail) CopyTo(emails ...string) error {
 
 // BlindCopyTo sets email addresses to which an email blind copy will be sent
 func (m *Mail) BlindCopyTo(emails ...string) error {
-	if err := m.validateAndAppendEmails(emails); err != nil { // bcc, 
+	if err := m.validateAndAppendEmails(emails); err != nil {
 		return err
 	}
 
