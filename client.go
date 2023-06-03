@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/smtp"
 	"os"
@@ -13,38 +12,85 @@ import (
 	"time"
 )
 
+// SenderConfig contains information about the sender
 type SenderConfig struct {
-	// Name that will be displayed above emails
-	Name     string
-	Login    string
+	// Name specified in this field will be displayed above emails
+	Name string
+
+	// Login is the email address from which an emails will be sent.
+	// It is also will be used for authentication on server (if required)
+	Login string
+
+	// Password from your email account. It is used for authentication on server
 	Password string
 }
 
-type SmtpConfig struct {
-	Host       string
-	Port       uint16
-	UseAuth    bool
-	Sender     SenderConfig
-	TlsConfig  *tls.Config
-	// PreferAuth smtp.Auth
-	// UseTls bool
+type encryption int
 
+const (
+	// EncryptSSL is a default encryption type. Use this
+	// type if you want to encrypt your connection but
+	// you don't need to call STARTTLS command.
+	//
+	// This encryption type may be used if you establishing
+	// a connection on port 465
+	EncryptSSL encryption = iota
+
+	// EncryptTLS encryption type is used if you want to
+	// encrypt connection by calling STARTTLS command.
+	//
+	// This encryption type may be used if you establishing
+	// a connection on port 587 or 25 (the last one is not
+	// recommended to use)
+	EncryptTLS
+
+	// No encryption
+	EncryptNone
+)
+
+// SmtpConfig contains information required for establishing connection
+// and generating message
+type SmtpConfig struct {
+	// Host represents the SMTP server address
+	Host string
+
+	// Port represents the SMTP server port
+	Port uint16
+
+	// NeedAuth is used to indicate that the server
+	// demands an authentication before sending emails
+	NeedAuth bool
+
+	// EncryptType is an encryption type (SSL, TLS or none)
+	EncryptType encryption
+
+	// Sender represents the sender configuration
+	Sender SenderConfig
+
+	// TlsConfig is the TLS configuration used for TLS or SSL connections.
+	//
+	// Note: leave the default value if you don't know how to use it
+	TlsConfig *tls.Config
+
+	// maxMsgSize is a maximum message size that can be sent to the server.
+	// This field is set only if the server returns a SIZE extension
 	maxMsgSize uint
 }
 
+// SmtpClient represents a client that negotiate with the server
 type SmtpClient struct {
 	cfg    *SmtpConfig
 	client *smtp.Client
 }
 
-// Notes:
-// Sender login and mail from address may be different?
-// Gmail uses 465 port for ssl connection and 587 for tls/starttls
-
+// NewClient returns the new SMTP client
 func NewClient(cfg *SmtpConfig) *SmtpClient {
 	return &SmtpClient{cfg: cfg}
 }
 
+// Dial establishes a connection with the server using
+// parameters from SMTP config. If an error occurs
+// during a connection Dial will return it
 func (s *SmtpClient) Dial() error {
 	address := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
 
@@ -53,9 +99,17 @@ func (s *SmtpClient) Dial() error {
 		return err
 	}
 
-	// TODO: if tls
+	if s.cfg.EncryptType == EncryptSSL || s.cfg.EncryptType == EncryptTLS {
+		if s.cfg.TlsConfig == nil {
+			s.cfg.TlsConfig = &tls.Config{}
+		}
 
-	conn = tls.Client(conn, s.cfg.TlsConfig)
+		if !s.cfg.TlsConfig.InsecureSkipVerify {
+			s.cfg.TlsConfig.ServerName = s.cfg.Host
+		}
+
+		conn = tls.Client(conn, s.cfg.TlsConfig)
+	}
 
 	c, err := smtp.NewClient(conn, s.cfg.Host)
 	if err != nil {
@@ -74,23 +128,21 @@ func (s *SmtpClient) Dial() error {
 	}
 
 	if ok, value := c.Extension("SIZE"); ok {
-		size, err := strconv.Atoi(value)
-		if err != nil {
+		if size, err := strconv.Atoi(value); err == nil {
 			s.cfg.maxMsgSize = uint(size)
-		} else {
-			s.cfg.maxMsgSize = 10485760; // 10 MB
 		}
 	}
 
-	// if UseTls
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		if err := c.StartTLS(s.cfg.TlsConfig); err != nil {
-			c.Quit()
-			return err
+	if s.cfg.EncryptType == EncryptTLS {
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err := c.StartTLS(s.cfg.TlsConfig); err != nil {
+				c.Quit()
+				return err
+			}
 		}
 	}
 
-	if s.cfg.UseAuth {
+	if s.cfg.NeedAuth {
 		if s.cfg.Sender.Login == "" {
 			return errors.New("wail: sender login doesn't specified")
 		}
@@ -99,31 +151,26 @@ func (s *SmtpClient) Dial() error {
 			return errors.New("wail: sender password doesn't specified")
 		}
 
-		// auth := s.cfg.PreferAuth
 		var auth smtp.Auth = nil
 
-		// if auth == nil {
-			if ok, authMethod := c.Extension("AUTH"); ok {
-				switch {
-				case strings.Contains(authMethod, "LOGIN"):
-					auth = LoginAuth(s.cfg.Sender.Login, s.cfg.Sender.Password)
-				case strings.Contains(authMethod, "CRAM-MD5"):
-					auth = smtp.CRAMMD5Auth(s.cfg.Sender.Login, s.cfg.Sender.Password)
-				case strings.Contains(authMethod, "XOAUTH2"):
-					{
-						// var token oauth2.Token
-						// token.
-						// 	a = XoAuth2Auth(s.cfg.Sender.Login)
-					}
-				case strings.Contains(authMethod, "PLAIN"):
-					auth = smtp.PlainAuth("", s.cfg.Sender.Login, s.cfg.Sender.Password, s.cfg.Host)
+		if ok, authMethod := c.Extension("AUTH"); ok {
+			switch {
+			case strings.Contains(authMethod, "LOGIN"):
+				auth = LoginAuth(s.cfg.Sender.Login, s.cfg.Sender.Password)
+			case strings.Contains(authMethod, "CRAM-MD5"):
+				auth = smtp.CRAMMD5Auth(s.cfg.Sender.Login, s.cfg.Sender.Password)
+			case strings.Contains(authMethod, "XOAUTH2"):
+				{
+					// TODO: make support XOAUTH2 auth?
 				}
+			case strings.Contains(authMethod, "PLAIN"):
+				auth = smtp.PlainAuth("", s.cfg.Sender.Login, s.cfg.Sender.Password, s.cfg.Host)
+			}
 
-				if auth == nil {
-					c.Quit()
-					return errors.New("wail: can't retrieve authentication method")
-				}
-			// }
+			if auth == nil {
+				c.Quit()
+				return errors.New("wail: can't retrieve authentication method")
+			}
 		}
 
 		if err := c.Auth(auth); err != nil {
@@ -135,18 +182,17 @@ func (s *SmtpClient) Dial() error {
 	return nil
 }
 
+// Close closes a connection with the server by sending the QUIT command
 func (s *SmtpClient) Close() error {
 	return s.client.Quit()
 }
 
-// func (s *SmtpClient) reconnect() error {
-// 	return nil
-// }
-
+// Send assembles the message and sends it to the server
 func (s *SmtpClient) Send(m *Mail) error {
-	// TODO: reconnect if connection was closed
 	if err := s.client.Noop(); err != nil {
-		// reconnect
+		if err := s.Dial(); err != nil {
+			return fmt.Errorf("wail: an error occured while reconnecting to the server (%s)", err.Error())
+		}
 	}
 
 	if err := s.client.Mail(s.cfg.Sender.Login); err != nil {
@@ -158,17 +204,17 @@ func (s *SmtpClient) Send(m *Mail) error {
 	}
 
 	for _, email := range m.recipients {
-		// for _, email := range emails {
-			if err := s.client.Rcpt(email); err != nil {
-				return err
-			}
-		// }
+		if err := s.client.Rcpt(email); err != nil {
+			return err
+		}
 	}
 
 	m.mb.SetFieldFrom(s.cfg.Sender.Name, s.cfg.Sender.Login)
-	header := m.mb.GetResultMessage(s.cfg.maxMsgSize)
 
-	log.Println("Header:", string(header))
+	header, err := m.mb.GetResultMessage(s.cfg.maxMsgSize)
+	if err != nil {
+		return err
+	}
 
 	w, err := s.client.Data()
 	if err != nil {
@@ -182,5 +228,4 @@ func (s *SmtpClient) Send(m *Mail) error {
 	}
 
 	return w.Close()
-	// return nil
 }
