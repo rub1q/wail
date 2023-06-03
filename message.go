@@ -3,29 +3,52 @@ package wail
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 )
 
-type contentType string
+type contentType int
 
 const (
-	textPlain contentType = "text/plain"
-	textHtml  contentType = "text/html"
-	multipartMix    contentType = "multipart/mixed"
-	multipartAlt    contentType = "multipart/alternative"
-	applOctetStream contentType = "application/octet-stream"
+	TextPlain contentType = iota
+	TextHtml
+
+	multipartMix
+	multipartAlt
+	applOctetStream
 )
 
-var boundary = getBoundaryValue()
+var contentTypes = map[contentType]string{
+	TextPlain:       "text/plain",
+	TextHtml:        "text/html",
+	multipartMix:    "multipart/mixed",
+	multipartAlt:    "multipart/alternative",
+	applOctetStream: "application/octet-stream",
+}
+
+func (c contentType) string() string {
+	return contentTypes[c]
+}
+
+// Boundary is used in multipart messages
+var boundary = func() string {
+	h := sha256.New224()
+	h.Write([]byte("6MHoYQhoRORdeWi6RzQaFKK7iGYieH"))
+
+	out := hex.EncodeToString(h.Sum(nil))
+	return out[:len(out)/2]
+}()
+
 var middleBound = "--" + boundary + "\r\n"
 var endBound = "--" + boundary + "--"
 
 type Message interface {
+	// GetContent returns formatted message body text
 	GetContent(mb *mimeBuilder) string
+
+	// GetContentType returns a content type of the message
+	// that is used for assembling a result message
 	GetContentType() contentType
 }
 
@@ -40,26 +63,13 @@ func NewTextMessage() TextMessage {
 }
 
 // Set sets a text content type (plain or html) and message text
-func (t *TextMessage) Set(ctype string, text []byte) error {
-	ctype = strings.ToLower(ctype)
-	
-	if ctype != "plain" && ctype != "html" {
-		return errors.New("wail: invalid text content type")
-	}
-
-	if ctype == "plain" {
-		t.ctype = textPlain
-	} else {
-		t.ctype = textHtml
-	}
-	
+func (t *TextMessage) Set(ctype contentType, text []byte) {
+	t.ctype = ctype
 	t.text = text
-
-	return nil
 }
 
 func (t *TextMessage) GetContent(mb *mimeBuilder) string {
-	content := fmt.Sprintf("Content-Type: %s; charset=%s\r\n", t.ctype, mb.charset)
+	content := fmt.Sprintf("Content-Type: %s; charset=%s\r\n", t.ctype.string(), mb.charset)
 	content += fmt.Sprintf("Content-Transfer-Encoding: %s\r\n", mb.encoding)
 	content += "\r\n"
 
@@ -102,15 +112,17 @@ func (a *Attachment) ReadFromFile(filePath string) error {
 	return nil
 }
 
-// SetAsBinary sets names and file content in cases when you can't read 
+// SetAsBinary sets names and file content in cases when you can't read
 // it from file (e.g. a file content stores in DB)
 func (a *Attachment) SetAsBinary(name string, content []byte) {
 	a.name = name
-	a.content = content
+
+	a.content = make([]byte, len(content))
+	copy(a.content, content)
 }
 
 func (a *Attachment) GetContent(mb *mimeBuilder) string {
-	content := "Content-Type: application/octet-stream\r\n"
+	content := fmt.Sprintf("Content-Type: %s\r\n", a.GetContentType().string())
 	content += fmt.Sprintf("Content-Disposition: attachment; filename=%s\r\n", a.name)
 	content += fmt.Sprintf("Content-Transfer-Encoding: %s\r\n", mb.encoding)
 	content += "\r\n"
@@ -135,8 +147,8 @@ func NewMultipartMixedMessage() MultipartMixedMessage {
 }
 
 // SetText sets a text content type (plain or html) and message text
-func (m *MultipartMixedMessage) SetText(ctype string, text []byte) error {
-	return m.text.Set(ctype, text)
+func (m *MultipartMixedMessage) SetText(ctype contentType, text []byte) {
+	m.text.Set(ctype, text)
 }
 
 // AddAttachment adds an attachment to the message
@@ -145,7 +157,7 @@ func (m *MultipartMixedMessage) AddAttachment(attach Attachment) {
 }
 
 func (m *MultipartMixedMessage) GetContent(mb *mimeBuilder) string {
-	content := fmt.Sprintf("Content-Type: multipart/mixed; boundary=%s\r\n", boundary)
+	content := fmt.Sprintf("Content-Type: %s; boundary=%s\r\n", m.GetContentType().string(), boundary)
 	content += "\r\n"
 
 	content += middleBound
@@ -184,26 +196,30 @@ func NewMultipartAltMessage() MultipartAltMessage {
 	return MultipartAltMessage{}
 }
 
+// SetPlainText sets a plain part of the message with specified order (priority)
+//
 // Note: Anti-spam software penalizing messages with very different
 // text in a multipart/alternative message
 func (m *MultipartAltMessage) SetPlainText(text []byte, order int) {
 	txtPlain := TextMessage{}
-	txtPlain.Set("plain", text)
+	txtPlain.Set(TextPlain, text)
 
 	m.msg = append(m.msg, altMessage{text: txtPlain, order: order})
 }
 
+// SetHtmlText sets an html part of the message with specified order (priority)
+//
 // Note: Anti-spam software penalizing messages with very different
 // text in a multipart/alternative message
 func (m *MultipartAltMessage) SetHtmlText(text []byte, order int) {
 	txtHtml := TextMessage{}
-	txtHtml.Set("html", text)
+	txtHtml.Set(TextHtml, text)
 
 	m.msg = append(m.msg, altMessage{text: txtHtml, order: order})
 }
 
 func (m *MultipartAltMessage) GetContent(mb *mimeBuilder) string {
-	content := fmt.Sprintf("Content-Type: multipart/alternative; boundary=%s\r\n", boundary)
+	content := fmt.Sprintf("Content-Type: %s; boundary=%s\r\n", m.GetContentType().string(), boundary)
 	content += "\r\n"
 
 	sort.SliceStable(m.msg, func(i, j int) bool {
@@ -225,13 +241,4 @@ func (m *MultipartAltMessage) GetContent(mb *mimeBuilder) string {
 
 func (m *MultipartAltMessage) GetContentType() contentType {
 	return multipartAlt
-}
-
-// getBoundaryValue returns a boundary value for multipart messages
-func getBoundaryValue() string {
-	h := sha256.New224()
-	h.Write([]byte("6MHoYQhoRORdeWi6RzQaFKK7iGYieH"))
-
-	out := hex.EncodeToString(h.Sum(nil))
-	return out[:len(out)/2]
 }
