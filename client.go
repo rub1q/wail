@@ -92,6 +92,10 @@ func NewClient(cfg *SmtpConfig) *SmtpClient {
 // parameters from SMTP config. If an error occurs
 // during a connection Dial will return it
 func (s *SmtpClient) Dial() error {
+	if s.cfg == nil {
+		return errors.New("wail: smtp config is nil")
+	}
+
 	address := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
 
 	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
