@@ -45,7 +45,7 @@ func TestSplitHeader(t *testing.T) {
 
 	expect := "=?UTF-8?B?U29tZSB2ZXJ5IGxvbmcgdGV4dCB3aXRob3V0IG1lYW5pbmc=?=\r\n=?UTF-8?B?U29tZSB2ZXJ5IGxvbmcgdGV4dCB3aXRob3V0IG1lYW5pbmc=?=\r\n=?UTF-8?B?U29tZSB2ZXJ5IGxvbmcgdGV4dCB3aXRob3V0IG1lYW5pbmc=?="
 
-	if s := splitHeader(subjectExample); s != str {
+	if s := splitHeader(subjectExample); s != expect {
 		t.Errorf("Invalid split result, expect %s, got %s", expect, s)
 	}
 
