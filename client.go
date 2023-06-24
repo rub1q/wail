@@ -48,14 +48,15 @@ const (
 	EncryptNone
 )
 
-// SmtpConfig contains information required for establishing connection
-// and generating message
-type SmtpConfig struct {
+// ServerConfig contains information about the SMTP server
+type ServerConfig struct {
 	// Host represents the SMTP server address
 	Host string
 
 	// Port represents the SMTP server port
 	Port uint16
+
+	ConnectTimeout time.Duration
 
 	// NeedAuth is used to indicate that the server
 	// demands an authentication before sending emails
@@ -64,6 +65,17 @@ type SmtpConfig struct {
 	// EncryptType is an encryption type (SSL, TLS or none)
 	EncryptType encryption
 
+	// maxMsgSize is a maximum message size that can be sent to the server.
+	// This field is set only if the server returns the SIZE extension
+	maxMsgSize uint
+}
+
+// SmtpConfig contains information required for establishing connection
+// and generating message
+type SmtpConfig struct {
+	// Server represents the server configuration
+	Server ServerConfig
+
 	// Sender represents the sender configuration
 	Sender SenderConfig
 
@@ -71,10 +83,6 @@ type SmtpConfig struct {
 	//
 	// Note: leave the default value if you don't know how to use it
 	TlsConfig *tls.Config
-
-	// maxMsgSize is a maximum message size that can be sent to the server.
-	// This field is set only if the server returns a SIZE extension
-	maxMsgSize uint
 }
 
 // SmtpClient represents a client that negotiate with the server
@@ -85,7 +93,7 @@ type SmtpClient struct {
 
 // NewClient returns the new SMTP client
 func NewClient(cfg *SmtpConfig) *SmtpClient {
-	return &SmtpClient{cfg: cfg}
+	return &SmtpClient{cfg: cfg, client: nil}
 }
 
 // Dial establishes a connection with the server using
@@ -93,31 +101,53 @@ func NewClient(cfg *SmtpConfig) *SmtpClient {
 // during a connection Dial will return it
 func (s *SmtpClient) Dial() error {
 	if s.cfg == nil {
-		return errors.New("wail: smtp config is nil")
+		return errors.New("wail: smtp config is not provided")
 	}
 
-	address := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
+	address := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
 
-	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
+	conn, err := net.DialTimeout("tcp", address, s.cfg.Server.ConnectTimeout)
 	if err != nil {
 		return err
 	}
 
-	if s.cfg.EncryptType == EncryptSSL || s.cfg.EncryptType == EncryptTLS {
+	if s.cfg.Server.EncryptType == EncryptSSL || s.cfg.Server.EncryptType == EncryptTLS {
 		if s.cfg.TlsConfig == nil {
 			s.cfg.TlsConfig = &tls.Config{}
 		}
 
 		if !s.cfg.TlsConfig.InsecureSkipVerify {
-			s.cfg.TlsConfig.ServerName = s.cfg.Host
+			s.cfg.TlsConfig.ServerName = s.cfg.Server.Host
 		}
 
 		conn = tls.Client(conn, s.cfg.TlsConfig)
 	}
 
-	c, err := smtp.NewClient(conn, s.cfg.Host)
-	if err != nil {
-		return err
+	var c *smtp.Client
+
+	if s.cfg.Server.ConnectTimeout != 0 {
+		connChan := make(chan error)
+
+		go func() {
+			defer close(connChan)
+
+			c, err = smtp.NewClient(conn, s.cfg.Server.Host)
+			connChan <- err
+		}()
+
+		select {
+		case <-time.After(s.cfg.Server.ConnectTimeout):
+			return errors.New("wail: connection timeout")
+		case err := <-connChan:
+			if err != nil {
+				return err
+			}
+		}
+	} else {
+		c, err = smtp.NewClient(conn, s.cfg.Server.Host)
+		if err != nil {
+			return err
+		}
 	}
 
 	s.client = c
@@ -133,11 +163,11 @@ func (s *SmtpClient) Dial() error {
 
 	if ok, value := c.Extension("SIZE"); ok {
 		if size, err := strconv.Atoi(value); err == nil {
-			s.cfg.maxMsgSize = uint(size)
+			s.cfg.Server.maxMsgSize = uint(size)
 		}
 	}
 
-	if s.cfg.EncryptType == EncryptTLS {
+	if s.cfg.Server.EncryptType == EncryptTLS {
 		if ok, _ := c.Extension("STARTTLS"); ok {
 			if err := c.StartTLS(s.cfg.TlsConfig); err != nil {
 				c.Quit()
@@ -146,13 +176,13 @@ func (s *SmtpClient) Dial() error {
 		}
 	}
 
-	if s.cfg.NeedAuth {
+	if s.cfg.Server.NeedAuth {
 		if s.cfg.Sender.Login == "" {
-			return errors.New("wail: sender login doesn't specified")
+			return errors.New("wail: sender login is not specified")
 		}
 
 		if s.cfg.Sender.Password == "" {
-			return errors.New("wail: sender password doesn't specified")
+			return errors.New("wail: sender password is not specified")
 		}
 
 		var auth smtp.Auth = nil
@@ -168,7 +198,7 @@ func (s *SmtpClient) Dial() error {
 					// TODO: make support XOAUTH2 auth?
 				}
 			case strings.Contains(authMethod, "PLAIN"):
-				auth = smtp.PlainAuth("", s.cfg.Sender.Login, s.cfg.Sender.Password, s.cfg.Host)
+				auth = smtp.PlainAuth("", s.cfg.Sender.Login, s.cfg.Sender.Password, s.cfg.Server.Host)
 			}
 
 			if auth == nil {
@@ -188,11 +218,23 @@ func (s *SmtpClient) Dial() error {
 
 // Close closes a connection with the server by sending the QUIT command
 func (s *SmtpClient) Close() error {
+	if s.client == nil {
+		return errors.New("wail: connection with the smtp server is not established")
+	}
+
 	return s.client.Quit()
 }
 
 // Send assembles the message and sends it to the server
 func (s *SmtpClient) Send(m *Mail) error {
+	if s.client == nil {
+		return errors.New("wail: connection with the smtp server is not established")
+	}
+
+	if m == nil {
+		return errors.New("wail: an empty mail object has been provided")
+	}
+
 	if err := s.client.Noop(); err != nil {
 		if err := s.Dial(); err != nil {
 			return fmt.Errorf("wail: an error occured while reconnecting to the server (%s)", err.Error())
@@ -215,7 +257,7 @@ func (s *SmtpClient) Send(m *Mail) error {
 
 	m.mb.SetFieldFrom(s.cfg.Sender.Name, s.cfg.Sender.Login)
 
-	header, err := m.mb.GetResultMessage(s.cfg.maxMsgSize)
+	header, err := m.mb.GetResultMessage(s.cfg.Server.maxMsgSize)
 	if err != nil {
 		return err
 	}
