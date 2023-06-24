@@ -12,26 +12,27 @@ import (
 )
 
 // RFC 5322 2.2.3
-const lineLenghtLimit = 76
+const lineLengthLimit = 76
 
 type mimeBuilder struct {
-	charset     Charset
-	encoding    Encoding
+	charset     charset
+	encoding    encoding
 	encoder     mime.WordEncoder
 	contentType contentType
-	header      map[string]string // textproto.MIMEHeader?
+	header      map[string]string
 }
 
-func newMimeBuilder(charset Charset, encoding Encoding) *mimeBuilder {
+func newMimeBuilder(charset charset, encoding encoding) *mimeBuilder {
 	mb := &mimeBuilder{
 		charset:  charset,
 		encoding: encoding,
 		header:   make(map[string]string),
 	}
 
-	if encoding == QuotedPrintable {
+	switch encoding {
+	case QuotedPrintable:
 		mb.encoder = mime.QEncoding
-	} else {
+	case Base64:
 		mb.encoder = mime.BEncoding
 	}
 
@@ -45,8 +46,8 @@ func (m *mimeBuilder) EncodeHeader(value string) string {
 
 	out := m.encoder.Encode(string(m.charset), value)
 
-	if len(out) > lineLenghtLimit {
-		split(&out)
+	if len(out) > lineLengthLimit {
+		out = splitHeader(out)
 	}
 
 	return out
@@ -103,7 +104,7 @@ func (m *mimeBuilder) SetFieldCc(addr ...string) {
 
 func (m *mimeBuilder) SetFieldBcc(addr ...string) {
 	if len(addr) == 0 {
-		return 
+		return
 	}
 
 	m.header["bcc"] = makeAddrString(addr)
@@ -117,104 +118,90 @@ func (m *mimeBuilder) SetMessage(msg Message) {
 func (m *mimeBuilder) GetResultMessage(maxMsgSize uint) ([]byte, error) {
 	to, ok := m.header["to"]
 	if !ok {
-		return nil, errors.New("wail: field 'To' doesn't specified")
+		return nil, errors.New("wail: field 'To' doesn't provided")
 	}
-	
-	const size = 1048576; // 1 MB
-	
-	h := make([]byte, 0, size)
 
 	date := time.Now().Format(time.RFC1123Z)
 
-	h = append(h, []byte("Date: "+date+"\r\n")...)
-	h = append(h, []byte("Subject: "+m.header["subject"]+"\r\n")...)
-	h = append(h, []byte("From: "+m.header["from"]+"\r\n")...)
-	h = append(h, []byte("To: "+to+"\r\n")...)
+	out := fmt.Sprintf("Date:%s\r\n", date)
+	out += fmt.Sprintf("Subject:%s\r\n", m.header["subject"])
+	out += fmt.Sprintf("From:%s\r\n", m.header["from"])
+	out += fmt.Sprintf("To:%s\r\n", to)
 
 	if cc, ok := m.header["cc"]; ok {
-		h = append(h, []byte("Cc: "+cc+"\r\n")...)
+		out += fmt.Sprintf("Cc:%s\r\n", cc)
 	}
 
 	if bcc, ok := m.header["bcc"]; ok {
-		h = append(h, []byte("Bcc: "+bcc+"\r\n")...)
+		out += fmt.Sprintf("Bcc:%s\r\n", bcc)
 	}
 
-	h = append(h, []byte("MIME-Version: 1.0\r\n")...)
+	out += "MIME-Version: 1.0\r\n"
 
 	if ct, ok := m.header[m.contentType.string()]; ok {
-		h = append(h, []byte(ct+"\r\n")...)
+		out += ct + "\r\n"
 	}
 
-	if maxMsgSize != 0 && uint(len(h)) > maxMsgSize { 
-		h = nil
-		return nil, fmt.Errorf("wail: the max message size (%d) that the server can accept has been exceeded", maxMsgSize); 
+	if maxMsgSize != 0 && uint(len(out)) > maxMsgSize {
+		return nil, fmt.Errorf("wail: a max message size (%d) that the server can accept has been exceeded", maxMsgSize)
 	}
 
-	return h, nil
+	h := make([]byte, 0, len(out))
+
+	return append(h, []byte(out)...), nil
 }
 
-func split(value *string) {
-	if value == nil {
-		return
+func splitHeader(header string) string {
+	if len(header) == 0 {
+		return ""
 	}
 
-	s := strings.Fields(*value)
+	s := strings.Fields(header)
 
 	if len(s) == 0 {
-		return
+		return header
 	}
 
 	var out string
 
-	if len(s) == 1 {
-		for i := 0; i < len(*value); i += lineLenghtLimit {
-			if i+lineLenghtLimit > len(*value) {
-				out += (*value)[i:len(*value)] + "\r\n"
-			} else {
-				out += (*value)[i:i+lineLenghtLimit] + "\r\n"
-			}
-		}
-	} else if len(s) > 1 {
-		for i := 0; i < len(s)-1; i++ {
-
-			if len(s[i]) > lineLenghtLimit {
-				split(&s[i])
-			} else if len(s[i+1]) > lineLenghtLimit {
-				split(&s[i+1])
-			}
-
+	for i := 0; i < len(s); i++ { 
+		if len(s[i]) > lineLengthLimit {
+			out += strings.Join(split(s[i]), "\r\n")
+		} else {
 			out += s[i]
-
-			if len(s[i])+len(s[i+1])+1 > lineLenghtLimit {
-				out += "\r\n"
-			}
-
-			out += " "
-			out += s[i+1]
 		}
+
+		out += "\r\n"
 	}
 
-	*value = out
+	return out[:len(out)-2]
 }
 
-// func splitBody(value *string) {
-// 	var out string
+func split(s string) []string {
+	if len(s) == 0 {
+		return nil
+	}
 
-// 	for i := 0; i < len(*value); i += lineLenghtLimit {
-// 		if i+lineLenghtLimit > len(*value) {
-// 			out += (*value)[i:len(*value)] + "\r\n"
-//  		} else {
-// 			out += (*value)[i:i+lineLenghtLimit] + "\r\n"
-// 		}
-// 	}
+	var out []string
 
-// 	*value = out
-// }
+	for i := 0; i < len(s); i += lineLengthLimit {
+		to := i + lineLengthLimit
+
+		if to > len(s) {
+			to = len(s)
+		}
+
+		out = append(out, s[i:to])
+	}
+
+	return out
+}
 
 func base64Encode(text []byte) string {
 	out := base64.StdEncoding.EncodeToString(text)
-	if len(out) > lineLenghtLimit {
-		split(&out)
+
+	if len(out) > lineLengthLimit {
+		out = strings.Join(split(out), "\r\n")
 	}
 
 	return out
@@ -241,12 +228,12 @@ func makeAddrString(addr []string) string {
 	var sAddr string
 
 	for _, v := range addr {
-		if len(sAddr)+len(v)+3 > lineLenghtLimit {
+		if len(sAddr+v)+3 > lineLengthLimit {
 			sAddr += "\r\n"
 		}
 
 		sAddr += "<" + v + ">,"
 	}
 
-	return sAddr[0 : len(sAddr)-1]
+	return sAddr[:len(sAddr)-1]
 }
