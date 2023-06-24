@@ -5,35 +5,35 @@ import (
 	"net/mail"
 )
 
-type Encoding string
+type encoding string
 
 const (
-	QuotedPrintable Encoding = "quoted-printable"
-	Base64          Encoding = "base64"
+	QuotedPrintable encoding = "quoted-printable"
+	Base64          encoding = "base64"
 )
 
-type Charset string
+type charset string
 
 const (
-	UTF8       Charset = "UTF-8"
-	ISO_8859_1 Charset = "ISO-8859-1"
-	US_ASCII   Charset = "US-ASCII"
+	UTF8       charset = "UTF-8"
+	ISO_8859_1 charset = "ISO-8859-1"
+	US_ASCII   charset = "US-ASCII"
 )
 
-type Recipients []string 
+type recipients []string
 
 type MailConfig struct {
-	Charset  Charset
-	Encoding Encoding
+	Charset  charset
+	Encoding encoding
 }
 
 type Mail struct {
 	cfg *MailConfig
 	mb  *mimeBuilder
 
-	recipients Recipients
+	recipients recipients
 }
-
+ 
 var DefaultMailConfig MailConfig = MailConfig{
 	Charset:  UTF8,
 	Encoding: Base64,
@@ -43,6 +43,14 @@ func NewMail(cfg *MailConfig) *Mail {
 	var m *Mail
 
 	if cfg != nil {
+		if cfg.Charset == "" {
+			cfg.Charset = UTF8		
+		}
+		
+		if cfg.Encoding == "" {
+			cfg.Encoding = QuotedPrintable	
+		}
+		
 		m = &Mail{
 			cfg: &MailConfig{
 				Charset:  cfg.Charset,
@@ -53,12 +61,8 @@ func NewMail(cfg *MailConfig) *Mail {
 		m = &Mail{cfg: &DefaultMailConfig}
 	}
 
-	// TODO: parse config properly
-
-	// log.Println("cfg", cfg)
-
 	m.mb = newMimeBuilder(m.cfg.Charset, m.cfg.Encoding)
-	m.recipients = make(Recipients, 0, 10)
+	m.recipients = make(recipients, 0, 10)
 
 	return m
 }
@@ -97,7 +101,7 @@ func (m *Mail) To(emails ...string) error {
 
 // CopyTo sets email addresses to which an email copy will be sent
 func (m *Mail) CopyTo(emails ...string) error {
-	if err := m.validateAndAppendEmails(emails); err != nil { 
+	if err := m.validateAndAppendEmails(emails); err != nil {
 		return err
 	}
 
