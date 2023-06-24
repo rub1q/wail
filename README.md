@@ -7,6 +7,7 @@
   * [Step #3. Creating an email](#step-3-creating-an-email)
   * [Step #4. Creating a message](#step-4-creating-a-message)
   * [Step #5. Sending the email](#step-5-sending-the-email)
+* [License](#license)
 
 ## Overview
 Wail is a simple package to send emails. It supports: 
@@ -145,3 +146,6 @@ if err != nil {
 }
 ```
 
+## License
+
+[MIT License](https://github.com/rub1q/wail/blob/master/LICENSE)
